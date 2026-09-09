@@ -374,11 +374,27 @@ async def fixture_registry_async_client_oidc_authn_only_no_auth_header(
 
 
 _OIDC_PROXY_URI = "http://karapace-rest-proxy-oidc:8382"
+_OIDC_WITH_CREDS_PROXY_URI = "http://karapace-rest-proxy-oidc-with-creds:8582"
+_OIDC_BASIC_FWD_PROXY_URI = "http://karapace-rest-proxy-oidc-basic:8782"
 _NO_FORWARD_PROXY_URI = "http://karapace-rest-proxy-no-forward:8482"
 
 
 def _make_proxy_client(server_uri: str, token: str | None) -> Client:
     factory_headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+
+    async def factory(auth):
+        return ClientSession(headers=factory_headers)
+
+    return Client(
+        server_uri=server_uri,
+        client_factory=factory,
+        session_auth=None,
+    )
+
+
+def _make_basic_proxy_client(server_uri: str, login: str, password: str) -> Client:
+    """Proxy client that sends a client-supplied Basic Authorization header (forwarded to SR)."""
+    factory_headers = {"Authorization": BasicAuth(login, password).encode()}
 
     async def factory(auth):
         return ClientSession(headers=factory_headers)
@@ -396,6 +412,33 @@ async def fixture_rest_async_client_oidc_proxy(
     oidc_token,
 ) -> AsyncGenerator[Client, None]:
     client = _make_proxy_client(_OIDC_PROXY_URI, oidc_token)
+    try:
+        yield client
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="function", name="rest_async_client_oidc_proxy_with_creds")
+async def fixture_rest_async_client_oidc_proxy_with_creds(
+    loop: asyncio.AbstractEventLoop,
+    oidc_token,
+) -> AsyncGenerator[Client, None]:
+    """Valid Bearer aimed at a proxy that also has registry_user/password configured —
+    the forwarded token must win over the basic credentials (no aiohttp collision)."""
+    client = _make_proxy_client(_OIDC_WITH_CREDS_PROXY_URI, oidc_token)
+    try:
+        yield client
+    finally:
+        await client.close()
+
+
+@pytest.fixture(scope="function", name="rest_async_client_oidc_basic_fwd_proxy")
+async def fixture_rest_async_client_oidc_basic_fwd_proxy(
+    loop: asyncio.AbstractEventLoop,
+) -> AsyncGenerator[Client, None]:
+    """Client sending Basic admin:admin to a proxy (gate ON, invalid fallback creds) that
+    fronts the OIDC+authfile SR. The forwarded Basic header must be used, not the fallback."""
+    client = _make_basic_proxy_client(_OIDC_BASIC_FWD_PROXY_URI, "admin", "admin")
     try:
         yield client
     finally:

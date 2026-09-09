@@ -171,6 +171,11 @@ Notes:
 - The REST proxy needs no extra configuration: it forwards the inbound `Authorization`
   header to the Schema Registry, so both `Bearer` and `Basic` requests work through the
   proxy.
+- The proxy's own Schema Registry credentials (`registry_user` / `registry_password`) may
+  be set at the same time. A forwarded `Authorization` header always takes precedence;
+  `registry_user` / `registry_password` are used only for requests that arrive without one.
+  This lets the proxy keep a service credential as a fallback while clients migrate to
+  forwarded tokens — the two no longer conflict.
 
 ## OAuth2 (REST proxy)
 

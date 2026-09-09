@@ -7,9 +7,12 @@ End-to-end tests for OIDC bearer forwarding from the REST Proxy to the Schema Re
 Topology (compose profile: e2e):
 - karapace-schema-registry-authn-only:8281  — OIDC SR (forwarding gate target).
 - karapace-rest-proxy-oidc:8382              — REST Proxy with the gate ON.
+- karapace-rest-proxy-oidc-with-creds:8582   — gate ON *and* registry_user/password set (coexistence).
 - karapace-rest-proxy-no-forward:8482        — REST Proxy with the gate OFF (regression guard).
 - karapace-schema-registry-basic:8581        — Basic-auth SR.
 - karapace-rest-proxy-basic:8682             — Basic-auth proxy paired with it (issue #1274 baseline).
+- karapace-schema-registry-oidc-basic:8681   — OIDC+authfile SR (scheme dispatch).
+- karapace-rest-proxy-oidc-basic:8782         — proxy that forwards a client's Basic header to it.
 
 Topics are created up front because the broker has auto-create disabled; otherwise
 publish() short-circuits with 40401 before the SR auth path is exercised.
@@ -55,6 +58,12 @@ async def fixture_basic_sr_primary_ready(registry_async_client_basic: Client) ->
     await _wait_for_sr_primary(registry_async_client_basic)
 
 
+@pytest.fixture(name="oidc_basic_sr_primary_ready")
+async def fixture_oidc_basic_sr_primary_ready(registry_async_client_oidc_basic_bearer: Client) -> None:
+    # master_available is auth-gated on the OIDC SR; use the authenticated bearer client to poll.
+    await _wait_for_sr_primary(registry_async_client_oidc_basic_bearer)
+
+
 async def _ensure_topic(rest_client: Client, admin_client: KafkaAdminClient) -> str:
     """Create a fresh topic and wait until the proxy sees it."""
     topic = new_topic(admin_client)
@@ -78,6 +87,31 @@ async def test_avro_publish_forwards_bearer(
         "records": [{"value": {"n": "hello"}}],
     }
     res = await rest_async_client_oidc_proxy.post(f"/topics/{topic}", payload, headers=REST_HEADERS["avro"])
+
+    assert res.status_code == 200, res.json()
+    body = res.json()
+    assert "value_schema_id" in body
+    assert "offsets" in body and len(body["offsets"]) == 1
+
+
+async def test_avro_publish_forwards_bearer_with_registry_creds_set(
+    rest_async_client_oidc_proxy_with_creds: Client,
+    admin_client: KafkaAdminClient,
+    oidc_sr_primary_ready: None,
+) -> None:
+    """Coexistence regression guard: the proxy has registry_user/password configured AND
+    forwards a valid Bearer. The forwarded token must win over the basic credentials.
+
+    Before the per-request auth fix, this combination raised aiohttp's
+    "Cannot combine AUTHORIZATION header with AUTH argument" and surfaced as a 500.
+    """
+    topic = await _ensure_topic(rest_async_client_oidc_proxy_with_creds, admin_client)
+
+    payload = {
+        "value_schema": json.dumps({"type": "record", "name": "Simple", "fields": [{"name": "n", "type": "string"}]}),
+        "records": [{"value": {"n": "coexist"}}],
+    }
+    res = await rest_async_client_oidc_proxy_with_creds.post(f"/topics/{topic}", payload, headers=REST_HEADERS["avro"])
 
     assert res.status_code == 200, res.json()
     body = res.json()
@@ -145,6 +179,34 @@ async def test_consumer_fetch_forwards_bearer(
     assert fetch.status_code == 200, fetch.json()
     records = fetch.json()
     assert any(r.get("value") == {"n": "hi"} for r in records), records
+
+
+# Coexistence: a forwarded *Basic* header is relayed to an OIDC+authfile SR and validated there.
+
+
+async def test_avro_publish_forwards_basic_credentials(
+    rest_async_client_oidc_basic_fwd_proxy: Client,
+    admin_client: KafkaAdminClient,
+    oidc_basic_sr_primary_ready: None,
+) -> None:
+    """Client sends Basic admin:admin to a proxy whose own registry_user/password are invalid.
+
+    The proxy (gate ON) forwards the Basic header to the OIDC+authfile SR, which validates it
+    against the authfile. Success proves the forwarded header — not the invalid fallback creds —
+    was used, and that a forwarded Basic header coexists with configured session credentials.
+    """
+    topic = await _ensure_topic(rest_async_client_oidc_basic_fwd_proxy, admin_client)
+
+    payload = {
+        "value_schema": json.dumps({"type": "record", "name": "Simple", "fields": [{"name": "n", "type": "string"}]}),
+        "records": [{"value": {"n": "basic-fwd"}}],
+    }
+    res = await rest_async_client_oidc_basic_fwd_proxy.post(f"/topics/{topic}", payload, headers=REST_HEADERS["avro"])
+
+    assert res.status_code == 200, res.json()
+    body = res.json()
+    assert "value_schema_id" in body
+    assert "offsets" in body and len(body["offsets"]) == 1
 
 
 # Unhappy paths: gate ON, SR rejects the token; proxy surfaces 40801.

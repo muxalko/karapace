@@ -520,6 +520,7 @@ Keys to take special care are the ones needed to configure Kafka and advertised_
    * - ``registry_password``
      - ``None``
      - Schema Registry password for authentication, used by Kafka Rest for schema related requests.
+       A client ``Authorization`` header forwarded to the registry takes precedence; this is the fallback when none is forwarded.
    * - ``registry_port``
      - ``8081``
      - Schema Registry port, used by Kafka Rest for schema related requests.
@@ -530,6 +531,7 @@ Keys to take special care are the ones needed to configure Kafka and advertised_
    * - ``registry_user``
      - ``None``
      - Schema Registry user for authentication, used by Kafka Rest for schema related requests.
+       A client ``Authorization`` header forwarded to the registry takes precedence; this is the fallback when none is forwarded.
    * - ``replication_factor``
      - ``1``
      - The replication factor to be used with the schema topic.
@@ -808,6 +810,19 @@ the underlying Kafka service itself, if it's configured accordingly.
 Authorization is also done by Kafka itself, typically using the ``sub`` claim (although it's configurable) from the JWT as the username, checked against the configured ACLs.
 
 OAuth2 and ``Bearer`` token usage is dependent on the ``rest_authorization`` configuration parameter being ``true``.
+
+Forwarding credentials to the Schema Registry
+----------------------------------------------
+
+For schema operations (registration and lookup during produce/consume), the REST proxy forwards the inbound
+``Authorization`` header to the Schema Registry when ``sasl_oauthbearer_authentication_enabled`` is ``true``.
+Both ``Bearer`` (validated by the registry via OIDC) and ``Basic`` (validated against ``registry_authfile``) schemes
+are forwarded as-is, so a client can authenticate to the registry with its own token or credentials.
+
+A forwarded ``Authorization`` header takes precedence over the proxy's own ``registry_user`` / ``registry_password``;
+those service credentials are used only for requests that arrive without a forwarded header. The two may be configured
+together, which lets clients migrate to forwarded tokens one at a time. This forwarding is independent of
+``rest_authorization`` (which governs Kafka-side authentication).
 
 Token expiry
 ------------
