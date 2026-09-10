@@ -824,6 +824,11 @@ those service credentials are used only for requests that arrive without a forwa
 together, which lets clients migrate to forwarded tokens one at a time. This forwarding is independent of
 ``rest_authorization`` (which governs Kafka-side authentication).
 
+When the Schema Registry rejects the credentials or token during a schema operation, the REST proxy reports the failure
+with a matching status: ``401`` (error code ``401``) for authentication and ``403`` (error code ``403``) for
+authorization. Other schema registration failures keep their existing errors and are not reported as auth failures — an
+incompatible or otherwise rejected schema returns ``40801``, and a schema that fails to parse returns ``42205``.
+
 Token expiry
 ------------
 

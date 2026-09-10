@@ -5,14 +5,14 @@ See LICENSE for details
 End-to-end tests for OIDC bearer forwarding from the REST Proxy to the Schema Registry.
 
 Topology (compose profile: e2e):
-- karapace-schema-registry-authn-only:8281  — OIDC SR (forwarding gate target).
+- karapace-schema-registry-authn-only:8281   — OIDC SR (forwarding gate target).
 - karapace-rest-proxy-oidc:8382              — REST Proxy with the gate ON.
 - karapace-rest-proxy-oidc-with-creds:8582   — gate ON *and* registry_user/password set (coexistence).
 - karapace-rest-proxy-no-forward:8482        — REST Proxy with the gate OFF (regression guard).
 - karapace-schema-registry-basic:8581        — Basic-auth SR.
 - karapace-rest-proxy-basic:8682             — Basic-auth proxy paired with it (issue #1274 baseline).
 - karapace-schema-registry-oidc-basic:8681   — OIDC+authfile SR (scheme dispatch).
-- karapace-rest-proxy-oidc-basic:8782         — proxy that forwards a client's Basic header to it.
+- karapace-rest-proxy-oidc-basic:8782        — proxy that forwards a client's Basic header to it.
 
 Topics are created up front because the broker has auto-create disabled; otherwise
 publish() short-circuits with 40401 before the SR auth path is exercised.
@@ -209,7 +209,7 @@ async def test_avro_publish_forwards_basic_credentials(
     assert "offsets" in body and len(body["offsets"]) == 1
 
 
-# Unhappy paths: gate ON, SR rejects the token; proxy surfaces 40801.
+# Unhappy paths: SR rejects the credentials/token; proxy surfaces a precise 401.
 
 
 async def test_avro_publish_invalid_bearer_is_rejected(
@@ -218,7 +218,7 @@ async def test_avro_publish_invalid_bearer_is_rejected(
     admin_client: KafkaAdminClient,
     oidc_sr_primary_ready: None,
 ) -> None:
-    """Garbage Bearer is rejected by SR; proxy surfaces 40801."""
+    """Garbage Bearer is rejected by SR (401); proxy surfaces a precise 401, not a generic error."""
     # Topic creation uses a valid-token client so we exercise the SR auth path, not 40401.
     topic = await _ensure_topic(rest_async_client_oidc_proxy, admin_client)
 
@@ -228,8 +228,8 @@ async def test_avro_publish_invalid_bearer_is_rejected(
     }
     res = await rest_async_client_oidc_proxy_invalid.post(f"/topics/{topic}", payload, headers=REST_HEADERS["avro"])
 
-    assert res.status_code != 200
-    assert res.json().get("error_code") == RESTErrorCodes.SCHEMA_RETRIEVAL_ERROR.value
+    assert res.status_code == 401, res.json()
+    assert res.json().get("error_code") == RESTErrorCodes.HTTP_UNAUTHORIZED.value
 
 
 async def test_avro_publish_no_auth_header_is_rejected(
@@ -247,8 +247,8 @@ async def test_avro_publish_no_auth_header_is_rejected(
     }
     res = await rest_async_client_oidc_proxy_no_auth_header.post(f"/topics/{topic}", payload, headers=REST_HEADERS["avro"])
 
-    assert res.status_code != 200
-    assert res.json().get("error_code") == RESTErrorCodes.SCHEMA_RETRIEVAL_ERROR.value
+    assert res.status_code == 401, res.json()
+    assert res.json().get("error_code") == RESTErrorCodes.HTTP_UNAUTHORIZED.value
 
 
 # Backwards-compat: gate OFF must not forward the inbound Bearer.
@@ -259,7 +259,7 @@ async def test_avro_publish_with_gate_off_does_not_forward_bearer(
     admin_client: KafkaAdminClient,
     oidc_sr_primary_ready: None,
 ) -> None:
-    """Gate OFF + valid Bearer + OIDC SR: write fails because nothing is forwarded."""
+    """Gate OFF + valid Bearer + OIDC SR: write fails because nothing is forwarded (SR 401)."""
     topic = await _ensure_topic(rest_async_client_oidc_proxy_no_forward, admin_client)
 
     payload = {
@@ -268,8 +268,8 @@ async def test_avro_publish_with_gate_off_does_not_forward_bearer(
     }
     res = await rest_async_client_oidc_proxy_no_forward.post(f"/topics/{topic}", payload, headers=REST_HEADERS["avro"])
 
-    assert res.status_code != 200
-    assert res.json().get("error_code") == RESTErrorCodes.SCHEMA_RETRIEVAL_ERROR.value
+    assert res.status_code == 401, res.json()
+    assert res.json().get("error_code") == RESTErrorCodes.HTTP_UNAUTHORIZED.value
 
 
 # Issue #1274 baseline: Basic proxy + Basic SR + gate OFF must keep working.

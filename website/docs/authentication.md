@@ -176,6 +176,12 @@ Notes:
   `registry_user` / `registry_password` are used only for requests that arrive without one.
   This lets the proxy keep a service credential as a fallback while clients migrate to
   forwarded tokens — the two no longer conflict.
+- When the Schema Registry rejects the credentials or token during a produce/consume schema
+  operation, the REST proxy surfaces the failure with a matching status: `401` (error code
+  `401`) for authentication and `403` (error code `403`) for authorization. Other schema
+  registration failures — for example an incompatible or malformed schema — keep their own
+  errors (`40801` for a registry rejection, `42205` for a schema that fails to parse) and are
+  not reported as auth failures.
 
 ## OAuth2 (REST proxy)
 
