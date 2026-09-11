@@ -101,13 +101,49 @@ class TestGetClient:
         assert first is second
         factory.assert_awaited_once()
 
-    async def test_factory_is_called_with_session_auth(self) -> None:
+    async def test_factory_is_called_without_session_auth(self) -> None:
+        # session_auth is no longer baked into the ClientSession (that would make aiohttp
+        # refuse a forwarded Authorization header). The factory always gets auth=None;
+        # session_auth is applied per-request via _resolve_auth instead.
         factory = AsyncMock(return_value=MagicMock())
         auth = BasicAuth(login="u", password="p")
         client = Client(server_uri="http://example.com", client_factory=factory, session_auth=auth)
 
         await client.get_client()
-        factory.assert_awaited_once_with(auth=auth)
+        factory.assert_awaited_once_with(auth=None)
+        assert client.session_auth is auth
+
+
+class TestResolveAuth:
+    """Per-request auth selection: a forwarded Authorization header and a configured
+    session_auth (registry_user/password) must coexist without colliding."""
+
+    def _client(self, session_auth: BasicAuth | None = None) -> Client:
+        return Client(server_uri="http://example.com", session_auth=session_auth)
+
+    def test_no_header_falls_back_to_session_auth(self) -> None:
+        auth = BasicAuth(login="u", password="p")
+        client = self._client(session_auth=auth)
+        assert client._resolve_auth(headers={}, auth=None) is auth
+
+    def test_forwarded_authorization_header_suppresses_session_auth(self) -> None:
+        auth = BasicAuth(login="u", password="p")
+        client = self._client(session_auth=auth)
+        assert client._resolve_auth(headers={"Authorization": "Bearer tok"}, auth=None) is None
+
+    def test_forwarded_header_match_is_case_insensitive(self) -> None:
+        auth = BasicAuth(login="u", password="p")
+        client = self._client(session_auth=auth)
+        assert client._resolve_auth(headers={"authorization": "Basic abc"}, auth=None) is None
+
+    def test_explicit_auth_argument_wins(self) -> None:
+        explicit = BasicAuth(login="a", password="b")
+        client = self._client(session_auth=BasicAuth(login="u", password="p"))
+        assert client._resolve_auth(headers={}, auth=explicit) is explicit
+
+    def test_returns_none_when_neither_header_nor_session_auth(self) -> None:
+        client = self._client(session_auth=None)
+        assert client._resolve_auth(headers={}, auth=None) is None
 
 
 class TestClose:
@@ -207,6 +243,26 @@ class TestHTTPMethods:
         assert session.put.call_args.kwargs["data"] == b"raw-bytes"
         # ``put_with_data`` must NOT serialise as json.
         assert "json" not in session.put.call_args.kwargs
+
+    async def test_forwarded_authorization_header_suppresses_session_auth_on_the_wire(self) -> None:
+        # session_auth is configured, but the request forwards an Authorization header:
+        # aiohttp must receive auth=None so it does not try to combine the two (ValueError).
+        client, session = _make_client_with_session("post", _make_aiohttp_response(200, {"id": 1}))
+        client.session_auth = BasicAuth(login="u", password="p")
+        await client.post(
+            "subjects/t/versions",
+            json={"schema": "{}"},
+            headers={"Authorization": "Bearer tok", "Content-Type": "application/vnd.schemaregistry.v1+json"},
+        )
+        assert session.post.call_args.kwargs["auth"] is None
+
+    async def test_session_auth_applied_when_no_authorization_header_on_the_wire(self) -> None:
+        # No forwarded header: fall back to the configured session_auth (registry_user/password).
+        client, session = _make_client_with_session("get", _make_aiohttp_response(200, {}))
+        auth = BasicAuth(login="u", password="p")
+        client.session_auth = auth
+        await client.get("subjects")
+        assert session.get.call_args.kwargs["auth"] is auth
 
 
 class TestResourceHelpers:

@@ -88,7 +88,11 @@ class SchemaError(Exception):
 
 
 class SchemaRetrievalError(SchemaError):
-    pass
+    def __init__(self, *args: object, status_code: int | None = None) -> None:
+        super().__init__(*args)
+        # HTTP status from the Schema Registry response, when the error originates from one.
+        # Lets callers distinguish auth failures (401/403) from other retrieval errors.
+        self.status_code = status_code
 
 
 class SchemaUpdateError(SchemaError):
@@ -165,7 +169,7 @@ class SchemaRegistryClient:
         headers = {"Content-Type": "application/vnd.schemaregistry.v1+json", **(_authorization_headers() or {})}
         result = await self.client.post(f"subjects/{quote(subject)}/versions", json=payload, headers=headers)
         if not result.ok:
-            raise SchemaRetrievalError(result.json())
+            raise SchemaRetrievalError(result.json(), status_code=result.status_code)
         return SchemaId(result.json()["id"])
 
     async def _get_schema_recursive(
@@ -186,7 +190,7 @@ class SchemaRegistryClient:
         result = await self.client.get(f"subjects/{quote(subject)}/versions/{version_str}", headers=_authorization_headers())
 
         if not result.ok:
-            raise SchemaRetrievalError(result.json())
+            raise SchemaRetrievalError(result.json(), status_code=result.status_code)
 
         json_result = result.json()
         if "id" not in json_result or "schema" not in json_result or "version" not in json_result:
@@ -257,7 +261,8 @@ class SchemaRegistryClient:
             f"schemas/ids/{schema_id}", params={"includeSubjects": "True"}, headers=_authorization_headers()
         )
         if not result.ok:
-            raise SchemaRetrievalError(result.json()["message"])
+            # Whole body: auth failures return {"error","reason"} with no "message" key.
+            raise SchemaRetrievalError(result.json(), status_code=result.status_code)
         json_result = result.json()
         if "schema" not in json_result:
             raise SchemaRetrievalError(f"Invalid result format: {json_result}")

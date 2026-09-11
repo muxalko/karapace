@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, Mock, call, patch
 import avro
 import pytest
 
+from karapace.core.client import Result
 from karapace.core.container import KarapaceContainer
 from karapace.core.schema_models import SchemaType, ValidatedTypedSchema, Versioner
 from karapace.core.serialization import (
@@ -960,3 +961,18 @@ def test_write_value_retry_starts_from_a_clean_buffer(karapace_container: Karapa
     assert len(buffer_when_called) == 2, "the encoder failed, so write_value is expected to have retried"
     assert buffer_when_called[0] == b"header", "the first attempt must encode right after the header"
     assert buffer_when_called[1] == b"header", "the retry must not see the bytes of the failed attempt"
+
+
+async def test_get_schema_for_id_auth_failure_raises_schema_retrieval_error_with_status() -> None:
+    # SR auth rejections return {"error", "reason"} with no "message" key. Indexing ["message"]
+    # used to KeyError here (bypassing the 401/403 handling); the whole body must be used instead.
+    client = SchemaRegistryClient("http://localhost:8081")
+    client.client.get = AsyncMock(
+        return_value=Result(status=401, json_result={"error": "Unauthorized", "reason": "Invalid token/payload"})
+    )
+    try:
+        with pytest.raises(SchemaRetrievalError) as exc_info:
+            await client.get_schema_for_id(1)
+        assert exc_info.value.status_code == 401
+    finally:
+        await client.close()

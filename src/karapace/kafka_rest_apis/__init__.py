@@ -463,6 +463,30 @@ class _ClusterMetadata(TypedDict):
     brokers: list[int]
 
 
+def _raise_for_registry_auth_error(error: SchemaRetrievalError, content_type: str) -> None:
+    """If the Schema Registry rejected the credentials/token, surface a precise 401/403
+    instead of the generic schema-retrieval error. No-op for non-auth failures."""
+    if error.status_code == HTTPStatus.UNAUTHORIZED:
+        KafkaRest.r(
+            body={
+                "error_code": RESTErrorCodes.HTTP_UNAUTHORIZED.value,
+                "message": "Schema registry authentication failed; check the forwarded credentials "
+                "or the configured registry_user/registry_password.",
+            },
+            content_type=content_type,
+            status=HTTPStatus.UNAUTHORIZED,
+        )
+    if error.status_code == HTTPStatus.FORBIDDEN:
+        KafkaRest.r(
+            body={
+                "error_code": RESTErrorCodes.HTTP_FORBIDDEN.value,
+                "message": "Schema registry authorization failed for the schema operation.",
+            },
+            content_type=content_type,
+            status=HTTPStatus.FORBIDDEN,
+        )
+
+
 class UserRestProxy:
     def __init__(
         self,
@@ -842,6 +866,7 @@ class UserRestProxy:
                 status=HTTPStatus.UNPROCESSABLE_ENTITY,
             )
         except SchemaRetrievalError as e:
+            _raise_for_registry_auth_error(e, content_type)
             KafkaRest.r(
                 body={"error_code": RESTErrorCodes.SCHEMA_RETRIEVAL_ERROR.value, "message": str(e)},
                 content_type=content_type,
@@ -959,6 +984,9 @@ class UserRestProxy:
         try:
             return await self.serializer.get_schema_for_id(schema_id, need_new_call=need_new_call)
         except SchemaRetrievalError as schema_error:
+            # An auth failure must surface as 401/403, not be masked as an invalid schema.
+            if schema_error.status_code in (HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN):
+                raise
             # if the schema doesn't exist we treated as if the error was due to an invalid schema
             raise InvalidSchema() from schema_error
 
@@ -1017,7 +1045,8 @@ class UserRestProxy:
                 content_type=content_type,
                 status=HTTPStatus.BAD_REQUEST,
             )
-        except SchemaRetrievalError:
+        except SchemaRetrievalError as e:
+            _raise_for_registry_auth_error(e, content_type)
             KafkaRest.r(
                 body={
                     "error_code": RESTErrorCodes.SCHEMA_RETRIEVAL_ERROR.value,
